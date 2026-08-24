@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "ScheduleModel.js" as ScheduleModel
 
 Panel {
   id: root
@@ -25,6 +26,9 @@ Panel {
   property bool scheduledPeriodActive: false
   property bool saveQueued: false
   property int pendingTemperature: -1
+  // Epoch ms at which a manual override hands control back to the schedule.
+  // 0 means the schedule is in charge.
+  property real overrideUntil: 0
   property bool applyFailed: false
 
   readonly property int neutralTemperature: temperatureSteps[temperatureSteps.length - 1]
@@ -68,7 +72,7 @@ Panel {
 
   function setTemperature(value) {
     scheduledTemperature = snapTemperature(value)
-    setActive(true)
+    overrideActive(true)
   }
 
   function nudgeTemperature(direction) {
@@ -120,40 +124,49 @@ Panel {
     applyProcess.running = true
   }
 
-  function validTime(value) {
-    return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
+  // A manual change holds until the next schedule boundary, then the schedule
+  // resumes control.
+  function overrideActive(value) {
+    setActive(value)
+    overrideUntil = ScheduleModel.nextBoundary(new Date(), warmFrom, normalAt)
   }
 
-  function clockMinutes(value) {
-    var parts = value.split(":")
-    return Number(parts[0]) * 60 + Number(parts[1])
-  }
-
-  function isScheduledPeriod(date) {
-    var now = date.getHours() * 60 + date.getMinutes()
-    var from = clockMinutes(warmFrom)
-    var to = clockMinutes(normalAt)
-    if (from === to) return false
-    return from < to ? now >= from && now < to : now >= from || now < to
-  }
-
-  // The user changed the schedule, so take the window that applies right now.
+  // The user changed the schedule, so take the window that applies right now
+  // and drop any override along with it.
   function adoptSchedule() {
     if (!stateLoaded || !scheduleEnabled) return
-    scheduledPeriodActive = isScheduledPeriod(new Date())
+    overrideUntil = 0
+    scheduledPeriodActive = ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt)
     setActive(scheduledPeriodActive)
   }
 
-  // The clock advanced. Follow the schedule only across a window boundary, so a
-  // manual toggle survives until the next one.
+  // The clock advanced.
   function followScheduleBoundary() {
     if (!stateLoaded || !scheduleEnabled) return
-    if (isScheduledPeriod(new Date()) === scheduledPeriodActive) return
+    if (overrideUntil > 0) {
+      // Membership alone cannot see this: a shell suspended across a whole
+      // cycle wakes inside the window it left, having crossed two boundaries.
+      // The override's own expiry instant can.
+      if (new Date().getTime() < overrideUntil) return
+      adoptSchedule()
+      return
+    }
+    if (ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt) === scheduledPeriodActive) return
     adoptSchedule()
   }
 
+  // Codex finding: editing FROM or TO inside the current window left a manual
+  // override standing, because membership had not changed. An edit is an
+  // explicit instruction, so the schedule takes over -- but only on a real
+  // edit, since onEditingFinished also fires on plain focus loss.
+  function applyScheduleEdit() {
+    var edited = fromField.text !== warmFrom || toField.text !== normalAt
+    if (!saveSchedule()) return
+    if (edited) adoptSchedule()
+  }
+
   function saveSchedule() {
-    if (!validTime(fromField.text) || !validTime(toField.text)) {
+    if (!ScheduleModel.isValidClock(fromField.text) || !ScheduleModel.isValidClock(toField.text)) {
       error = "Use 24-hour time, such as 19:00."
       return false
     }
@@ -188,7 +201,7 @@ Panel {
       fromField.text = warmFrom
       toField.text = normalAt
       stateLoaded = true
-      scheduledPeriodActive = isScheduledPeriod(new Date())
+      scheduledPeriodActive = ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt)
       if (firstLoad) {
         if (scheduleEnabled) setActive(scheduledPeriodActive)
         // `active` may not have changed, so push the temperature once on startup
@@ -215,7 +228,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): string {
-      root.setActive(!root.active)
+      root.overrideActive(!root.active)
       return root.active ? "enabled" : "disabled"
     }
     function status(): string {
@@ -234,15 +247,15 @@ Panel {
     }
     function refresh(): void { root.refresh() }
     function enable(): string {
-      root.setActive(true)
+      root.overrideActive(true)
       return root.active ? "enabled" : "disabled"
     }
     function disable(): string {
-      root.setActive(false)
+      root.overrideActive(false)
       return "disabled"
     }
     function toggle(): string {
-      root.setActive(!root.active)
+      root.overrideActive(!root.active)
       return root.active ? "enabled" : "disabled"
     }
   }
@@ -293,7 +306,7 @@ Panel {
     active: root.active
     tooltipText: root.temperature + "K screen temperature"
     onPressed: function(mouseButton) {
-      if (mouseButton === Qt.RightButton) root.setActive(!root.active)
+      if (mouseButton === Qt.RightButton) root.overrideActive(!root.active)
       else root.toggle()
     }
     onWheelMoved: function(delta) {
@@ -390,7 +403,7 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           checked: root.active
           foreground: root.bar.foreground
-          onToggled: root.setActive(!root.active)
+          onToggled: root.overrideActive(!root.active)
         }
       }
 
@@ -495,8 +508,8 @@ Panel {
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
               inputMethodHints: Qt.ImhTime
-              onAccepted: root.saveSchedule()
-              onEditingFinished: root.saveSchedule()
+              onAccepted: root.applyScheduleEdit()
+              onEditingFinished: root.applyScheduleEdit()
             }
           }
 
@@ -518,8 +531,8 @@ Panel {
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
               inputMethodHints: Qt.ImhTime
-              onAccepted: root.saveSchedule()
-              onEditingFinished: root.saveSchedule()
+              onAccepted: root.applyScheduleEdit()
+              onEditingFinished: root.applyScheduleEdit()
             }
           }
         }
