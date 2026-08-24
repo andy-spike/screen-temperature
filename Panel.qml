@@ -1,5 +1,4 @@
 import QtQuick
-import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -569,16 +568,13 @@ Panel {
               font.pixelSize: Style.font.caption
               font.bold: true
             }
-            TextField {
+            TimeField {
               id: fromField
               width: parent.width
               text: root.warmFrom
               placeholderText: "19:00"
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
-              inputMethodHints: Qt.ImhTime
-              selectByMouse: true
-              onActiveFocusChanged: if (activeFocus) Qt.callLater(selectAll)
               onAccepted: root.applyScheduleEdit()
               onEditingFinished: root.applyScheduleEdit()
             }
@@ -594,16 +590,13 @@ Panel {
               font.pixelSize: Style.font.caption
               font.bold: true
             }
-            TextField {
+            TimeField {
               id: toField
               width: parent.width
               text: root.normalAt
               placeholderText: "04:00"
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
-              inputMethodHints: Qt.ImhTime
-              selectByMouse: true
-              onActiveFocusChanged: if (activeFocus) Qt.callLater(selectAll)
               onAccepted: root.applyScheduleEdit()
               onEditingFinished: root.applyScheduleEdit()
             }

@@ -9,6 +9,7 @@ target="$HOME/.config/omarchy/plugins/io.github.andy-spike.screen-temperature"
 # Runtime files only; README, LICENSE, and tests are not loaded by the shell.
 cp "$repo/manifest.json" \
    "$repo/Panel.qml" \
+   "$repo/TimeField.qml" \
    "$repo/ScheduleModel.js" \
    "$repo/schedule.py" \
    "$target/"
