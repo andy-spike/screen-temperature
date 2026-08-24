@@ -55,9 +55,9 @@ is safe to delete.
 
 | Action | Result |
 | --- | --- |
-| Left click | Toggle warm light |
+| Left click | Open / close the panel |
 | Right click | Toggle warm light |
-| Mouse wheel | Adjust temperature |
+| Mouse wheel | Adjust temperature by one step |
 | Panel slider | Pick a temperature |
 | Schedule switch | Enable or disable the schedule |
 | FROM / TO fields | Edit the warm window (24-hour time, e.g. `19:00`) |
