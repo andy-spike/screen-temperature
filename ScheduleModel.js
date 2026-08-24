@@ -3,8 +3,6 @@
 // shell/plugins/services/nightlight/NightlightModel.js, so one file can be
 // imported by QML and required by node.
 
-var MINUTES_PER_DAY = 24 * 60
-
 function isValidClock(value) {
   return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)
 }
@@ -34,21 +32,19 @@ function nextBoundary(date, from, to) {
   var start = clockMinutes(from)
   var end = clockMinutes(to)
   if (start === end) return 0
-  var now = date.getHours() * 60 + date.getMinutes()
-  var soonest = MINUTES_PER_DAY
   var candidates = [start, end]
+  var soonest = 0
   for (var i = 0; i < candidates.length; i++) {
-    var delta = (candidates[i] - now + MINUTES_PER_DAY) % MINUTES_PER_DAY
-    if (delta > 0 && delta < soonest) soonest = delta
+    var at = new Date(date.getTime())
+    at.setHours(Math.floor(candidates[i] / 60), candidates[i] % 60, 0, 0)
+    if (at.getTime() <= date.getTime()) at.setDate(at.getDate() + 1)
+    if (soonest === 0 || at.getTime() < soonest) soonest = at.getTime()
   }
-  var at = new Date(date.getTime())
-  at.setSeconds(0, 0)
-  return at.getTime() + soonest * 60000
+  return soonest
 }
 
 if (typeof module !== "undefined") {
   module.exports = {
-    MINUTES_PER_DAY: MINUTES_PER_DAY,
     isValidClock: isValidClock,
     clockMinutes: clockMinutes,
     isScheduledPeriod: isScheduledPeriod,

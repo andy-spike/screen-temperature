@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Store the Screen Temperature plugin schedule."""
+"""Store the Screen Temperature plugin state."""
 
 import argparse
 import json
@@ -8,7 +8,14 @@ import re
 import tempfile
 from pathlib import Path
 
-DEFAULT = {"enabled": True, "from": "19:00", "to": "04:00", "temperature": 4000}
+DEFAULT = {
+    "enabled": True,
+    "active": False,
+    "overrideUntil": 0,
+    "from": "19:00",
+    "to": "04:00",
+    "temperature": 4000,
+}
 
 
 def write_atomic(path, text):
@@ -36,14 +43,28 @@ def main():
     parser.add_argument("--state", type=Path, default=Path.home() / ".config/omarchy/screen-temperature.json")
     parser.add_argument("--set", action="store_true")
     parser.add_argument("--enabled", choices=("true", "false"))
+    parser.add_argument("--active", choices=("true", "false"))
+    parser.add_argument("--override-until", type=int)
     parser.add_argument("--temperature", type=int)
     parser.add_argument("--from", dest="warm_from")
     parser.add_argument("--to", dest="normal_at")
     args = parser.parse_args()
 
     if args.set:
-        if None in (args.enabled, args.temperature, args.warm_from, args.normal_at):
-            parser.error("--set requires --enabled, --temperature, --from, and --to")
+        if None in (
+            args.enabled,
+            args.active,
+            args.override_until,
+            args.temperature,
+            args.warm_from,
+            args.normal_at,
+        ):
+            parser.error(
+                "--set requires --enabled, --active, --override-until, "
+                "--temperature, --from, and --to"
+            )
+        if args.override_until < 0:
+            parser.error("override-until must not be negative")
         if not 1000 <= args.temperature <= 6500:
             parser.error("temperature must be between 1000 and 6500")
         for label, clock in (("from", args.warm_from), ("to", args.normal_at)):
@@ -51,6 +72,8 @@ def main():
                 parser.error(f"{label} must use 24-hour HH:MM")
         state = {
             "enabled": args.enabled == "true",
+            "active": args.active == "true",
+            "overrideUntil": args.override_until,
             "temperature": args.temperature,
             "from": args.warm_from,
             "to": args.normal_at,

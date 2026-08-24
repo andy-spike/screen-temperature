@@ -1,6 +1,8 @@
 const assert = require("assert")
 const model = require("./ScheduleModel.js")
 
+process.env.TZ = "America/New_York"
+
 const at = (hour, minute, second = 0) => new Date(2026, 7, 24, hour, minute, second)
 const inWindow = (date, from = "19:00", to = "04:00") =>
   model.isScheduledPeriod(date, from, to)
@@ -50,5 +52,16 @@ assert.strictEqual(boundary(at(18, 59, 45)).getTime(), at(19, 0).getTime())
 assert.ok(model.nextBoundary(at(19, 30), "19:00", "04:00") > at(19, 30).getTime())
 const tomorrowAt4 = new Date(2026, 7, 25, 4, 0, 0).getTime()
 assert.strictEqual(boundary(at(19, 30)).getTime(), tomorrowAt4)
+
+// Boundaries stay on the requested local clock time across DST changes.
+const spring = new Date(2026, 2, 8, 1, 30)
+const springBoundary = new Date(model.nextBoundary(spring, "04:00", "05:00"))
+assert.strictEqual(springBoundary.getHours(), 4)
+assert.strictEqual(springBoundary.getTime() - spring.getTime(), 90 * 60000)
+
+const fall = new Date(2026, 10, 1, 0, 30)
+const fallBoundary = new Date(model.nextBoundary(fall, "02:00", "03:00"))
+assert.strictEqual(fallBoundary.getHours(), 2)
+assert.strictEqual(fallBoundary.getTime() - fall.getTime(), 150 * 60000)
 
 console.log("test_schedule_model.js: PASS")

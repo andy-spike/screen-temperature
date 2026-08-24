@@ -27,9 +27,12 @@ Panel {
   property bool saveQueued: false
   property int pendingTemperature: -1
   // Epoch ms at which a manual override hands control back to the schedule.
-  // 0 means the schedule is in charge.
+  // 0 means there is no timed override.
   property real overrideUntil: 0
   property bool applyFailed: false
+  // Most recent daemon reading that disagreed with the plugin's intent. Used
+  // by the external-writer guard to require two consecutive stable readings.
+  property int lastProbe: -1
 
   readonly property int neutralTemperature: temperatureSteps[temperatureSteps.length - 1]
   readonly property int temperature: active ? scheduledTemperature : neutralTemperature
@@ -71,7 +74,14 @@ Panel {
   }
 
   function setTemperature(value) {
-    scheduledTemperature = snapTemperature(value)
+    var snapped = snapTemperature(value)
+    // Neutral (6500) means "off", not a warm choice. Keep the stored warm
+    // value intact so a later toggle has something to apply, and switch off.
+    if (snapped >= neutralTemperature) {
+      overrideActive(false)
+      return
+    }
+    scheduledTemperature = snapped
     overrideActive(true)
   }
 
@@ -81,6 +91,11 @@ Panel {
 
   function saveTemperature(value) {
     setTemperature(value)
+    saveSchedule()
+  }
+
+  function saveActive(value) {
+    overrideActive(value)
     saveSchedule()
   }
 
@@ -128,7 +143,31 @@ Panel {
   // resumes control.
   function overrideActive(value) {
     setActive(value)
-    overrideUntil = ScheduleModel.nextBoundary(new Date(), warmFrom, normalAt)
+    overrideUntil = scheduleEnabled ? ScheduleModel.nextBoundary(new Date(), warmFrom, normalAt) : 0
+  }
+
+  // Guard against an external writer (e.g. the nightlight keyboard shortcut)
+  // re-pointing hyprsunset behind the plugin's back. A probe that disagrees
+  // with the plugin's intent twice in a row is a stable external change, so
+  // take control back. Skipped while an apply of our own is in flight, so we
+  // never fight ourselves.
+  function guardTemperature(reading) {
+    if (!stateLoaded || applyProcess.running) return
+    var match = String(reading).match(/[0-9]+/)
+    // -1 is a sentinel that never equals a real temperature (2000..6500), so
+    // a stopped daemon or malformed reply counts as a disagreement.
+    var current = match ? Number(match[0]) : -1
+    var intended = temperature
+    if (current === intended) {
+      lastProbe = -1
+      return
+    }
+    if (current === lastProbe) {
+      lastProbe = -1
+      applyTemperature(intended)
+    } else {
+      lastProbe = current
+    }
   }
 
   // The user changed the schedule, so take the window that applies right now
@@ -162,7 +201,10 @@ Panel {
   function applyScheduleEdit() {
     var edited = fromField.text !== warmFrom || toField.text !== normalAt
     if (!saveSchedule()) return
-    if (edited) adoptSchedule()
+    if (edited) {
+      adoptSchedule()
+      saveSchedule()
+    }
   }
 
   function saveSchedule() {
@@ -179,6 +221,8 @@ Panel {
     }
     saveProcess.command = ["python3", helper, "--set",
       "--enabled", scheduleEnabled ? "true" : "false",
+      "--active", active ? "true" : "false",
+      "--override-until", String(Math.max(0, Math.floor(overrideUntil))),
       "--temperature", String(scheduledTemperature),
       "--from", warmFrom, "--to", normalAt]
     saveProcess.running = true
@@ -195,7 +239,11 @@ Panel {
       var state = JSON.parse(text)
       var firstLoad = !stateLoaded
       scheduleEnabled = state.enabled
+      overrideUntil = Math.max(0, Number(state.overrideUntil) || 0)
       scheduledTemperature = snapTemperature(state.temperature)
+      // A stored neutral value (6500) would leave the toggle a silent no-op.
+      // It is never a valid "warm choice", so heal it to a warm default.
+      if (scheduledTemperature >= neutralTemperature) scheduledTemperature = 4000
       warmFrom = state.from
       normalAt = state.to
       fromField.text = warmFrom
@@ -203,7 +251,15 @@ Panel {
       stateLoaded = true
       scheduledPeriodActive = ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt)
       if (firstLoad) {
-        if (scheduleEnabled) setActive(scheduledPeriodActive)
+        if (scheduleEnabled && (overrideUntil > new Date().getTime() || warmFrom === normalAt))
+          setActive(state.active === true)
+        else if (scheduleEnabled) {
+          overrideUntil = 0
+          setActive(scheduledPeriodActive)
+        } else {
+          overrideUntil = 0
+          setActive(state.active === true)
+        }
         // `active` may not have changed, so push the temperature once on startup
         // to bring a hyprsunset left over from a previous session into line.
         applyTemperature(temperature)
@@ -228,7 +284,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): string {
-      root.overrideActive(!root.active)
+      root.saveActive(!root.active)
       return root.active ? "enabled" : "disabled"
     }
     function status(): string {
@@ -247,15 +303,15 @@ Panel {
     }
     function refresh(): void { root.refresh() }
     function enable(): string {
-      root.overrideActive(true)
+      root.saveActive(true)
       return root.active ? "enabled" : "disabled"
     }
     function disable(): string {
-      root.overrideActive(false)
+      root.saveActive(false)
       return "disabled"
     }
     function toggle(): string {
-      root.overrideActive(!root.active)
+      root.saveActive(!root.active)
       return root.active ? "enabled" : "disabled"
     }
   }
@@ -291,6 +347,28 @@ Panel {
     }
   }
 
+  // External-writer guard probe. Reads the daemon's current temperature once
+  // per tick; guardTemperature decides whether to re-assert.
+  Process {
+    id: probeProcess
+    command: ["timeout", "1", "hyprctl", "hyprsunset", "temperature"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.guardTemperature(text)
+    }
+    stderr: StdioCollector { waitForEnd: true }
+  }
+
+  Timer {
+    id: guardTimer
+    interval: 2000
+    repeat: true
+    running: root.stateLoaded
+    onTriggered: {
+      if (!applyProcess.running && !probeProcess.running) probeProcess.running = true
+    }
+  }
+
   Timer {
     interval: 15000
     repeat: true
@@ -306,7 +384,7 @@ Panel {
     active: root.active
     tooltipText: root.temperature + "K screen temperature"
     onPressed: function(mouseButton) {
-      if (mouseButton === Qt.RightButton) root.overrideActive(!root.active)
+      if (mouseButton === Qt.RightButton) root.saveActive(!root.active)
       else root.toggle()
     }
     onWheelMoved: function(delta) {
@@ -403,7 +481,7 @@ Panel {
           anchors.verticalCenter: parent.verticalCenter
           checked: root.active
           foreground: root.bar.foreground
-          onToggled: root.overrideActive(!root.active)
+          onToggled: root.saveActive(!root.active)
         }
       }
 
@@ -480,8 +558,12 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             onToggled: {
               root.scheduleEnabled = !root.scheduleEnabled
+              if (!root.scheduleEnabled) root.overrideUntil = 0
               // adoptSchedule reads in-memory state, so it need not await the write
-              if (root.saveSchedule()) root.adoptSchedule()
+              if (root.saveSchedule() && root.scheduleEnabled) {
+                root.adoptSchedule()
+                root.saveSchedule()
+              }
             }
           }
         }
