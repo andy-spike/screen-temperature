@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.andy-spike.screen-temperature",
+  "name": "Screen Temperature",
+  "version": "1.0.0",
+  "author": "Andy Spike",
+  "license": "MIT",
+  "description": "Control Hyprsunset temperature and schedule from the Omarchy bar.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Screen Temperature",
+    "description": "Hyprsunset temperature and schedule controls",
+    "category": "System",
+    "allowMultiple": false
+  }
+}
