@@ -40,8 +40,8 @@ assert.strictEqual(boundary(at(20, 0)).getHours(), 4)
 assert.strictEqual(boundary(at(20, 0)).getDate(), 25, "wraps to the next day")
 assert.strictEqual(boundary(at(3, 0)).getHours(), 4)
 
-// Standing exactly on a boundary must yield the *other* one, otherwise an
-// override taken at 19:00 would expire the instant it was made.
+// Standing on a boundary must yield the other one, or an override taken at
+// 19:00 would expire the instant it was made.
 assert.strictEqual(boundary(at(19, 0)).getHours(), 4)
 assert.strictEqual(boundary(at(4, 0)).getHours(), 19)
 

@@ -13,9 +13,7 @@ Panel {
   manageIpc: false
 
   readonly property string helper: Qt.resolvedUrl("schedule.py").toString().replace("file://", "")
-  // The toggle owns `active` outright. Deriving it from the hyprsunset probe
-  // instead means a dead or slow daemon reports the old temperature back and
-  // silently undoes the toggle, which is what used to happen.
+  // The toggle owns `active`: probing the daemon would let a stale reading undo it.
   property bool active: false
   property int scheduledTemperature: 3000
   property bool scheduleEnabled: true
@@ -26,20 +24,17 @@ Panel {
   property bool scheduledPeriodActive: false
   property bool saveQueued: false
   property int pendingTemperature: -1
-  // Epoch ms at which a manual override hands control back to the schedule.
-  // 0 means there is no timed override.
+  // Epoch ms when a manual override hands control back to the schedule; 0 = none.
   property real overrideUntil: 0
   property bool applyFailed: false
-  // Most recent daemon reading that disagreed with the plugin's intent. Used
-  // by the external-writer guard to require two consecutive stable readings.
+  // Last reading that disagreed with our intent; the guard needs two in a row.
   property int lastProbe: -1
 
   readonly property int neutralTemperature: temperatureSteps[temperatureSteps.length - 1]
   readonly property int temperature: active ? scheduledTemperature : neutralTemperature
 
-  // One apply per state change, no ramp: a ramp used to fire ~25 `hyprctl` calls
-  // per toggle, which raced the daemon start and left duplicate hyprsunsets
-  // contending for one socket.
+  // One apply per state change, no ramp: a ramp fired ~25 hyprctl calls per toggle
+  // and spawned duplicate hyprsunsets fighting over the socket.
   onTemperatureChanged: if (stateLoaded) applyTemperature(temperature)
   readonly property string temperatureName: nameForTemperature(temperature)
 
@@ -50,8 +45,7 @@ Panel {
     return "AMBER"
   }
 
-  // hyprsunset dislikes a firehose of temperature changes, so the slider only
-  // stops on these values instead of sweeping continuously.
+  // hyprsunset dislikes a firehose of changes, so the slider stops on fixed steps.
   readonly property var temperatureSteps: [2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500]
 
   function stepIndexFor(value) {
@@ -75,8 +69,7 @@ Panel {
 
   function setTemperature(value) {
     var snapped = snapTemperature(value)
-    // Neutral (6500) means "off", not a warm choice. Keep the stored warm
-    // value intact so a later toggle has something to apply, and switch off.
+    // Neutral (6500) means off; keep the stored warm value for the next toggle.
     if (snapped >= neutralTemperature) {
       overrideActive(false)
       return
@@ -99,36 +92,28 @@ Panel {
     saveSchedule()
   }
 
-  // This plugin is the sole writer of the hyprsunset temperature:
-  // omarchy.nightlight is in shell.json's disabledPlugins, so nothing else
-  // applies a value behind it.
-  //
-  // The temperature arrives as $1 rather than being pasted into the script, so
-  // the script itself is a constant.
+  // Sole writer of the temperature: omarchy.nightlight is disabled, so nothing
+  // else applies a value behind it. The value arrives as $1, so the script is a constant.
   readonly property string applyScript:
     "t=$1; " +
-    // Every call is bounded: a daemon stopped mid-syscall accepts the
-    // connection and never replies, which hangs hyprctl instead of failing it.
+    // Bounded: a daemon stopped mid-syscall accepts the connection and never
+    // replies, hanging hyprctl instead of failing it.
     "h() { timeout 1 hyprctl hyprsunset $1 $2 2>/dev/null; }; " +
-    // `pgrep` cannot tell a healthy daemon from one whose socket has stopped
-    // answering, so the command itself is the test. Read the value back as
-    // well: a freshly started hyprsunset applies its own default at the end of
-    // boot and overwrites anything set before then.
+    // pgrep cannot tell a healthy daemon from a dead socket, so the command is
+    // the test. Read back too: a fresh hyprsunset applies its boot default over
+    // anything set before it started.
     "ok() { h temperature $t >/dev/null && [ x$(h temperature | grep -oE '[0-9]+' | head -n1) = x$t ]; }; " +
     "ok && exit 0; " +
-    // Replace the daemon instead of adding one -- two of them contending for
-    // the same socket is what wedged it. SIGKILL because a stopped process
-    // leaves SIGTERM pending forever.
+    // Replace, not add: two daemons contend for one socket. SIGKILL because a
+    // stopped process leaves SIGTERM pending forever.
     "pkill -KILL -x hyprsunset; " +
     "setsid uwsm-app -- hyprsunset >/dev/null 2>&1 & " +
-    // Bounded by wall clock, not by attempts, so a machine where hyprsunset
-    // never starts fails in seconds rather than minutes.
+    // Bounded by wall clock, so a machine where hyprsunset never starts fails in seconds.
     "end=$((SECONDS+8)); " +
     "while [ $SECONDS -lt $end ]; do sleep 0.3; ok && exit 0; done; " +
     "exit 1"
 
-  // One `hyprctl` at a time. A value arriving mid-apply replaces any earlier
-  // pending one, so a slider drag collapses to where it stopped.
+  // One hyprctl at a time; a value arriving mid-apply replaces the pending one.
   function applyTemperature(value) {
     if (applyProcess.running) {
       pendingTemperature = value
@@ -139,23 +124,19 @@ Panel {
     applyProcess.running = true
   }
 
-  // A manual change holds until the next schedule boundary, then the schedule
-  // resumes control.
+  // A manual change holds until the next boundary, then the schedule resumes.
   function overrideActive(value) {
     setActive(value)
     overrideUntil = scheduleEnabled ? ScheduleModel.nextBoundary(new Date(), warmFrom, normalAt) : 0
   }
 
-  // Guard against an external writer (e.g. the nightlight keyboard shortcut)
-  // re-pointing hyprsunset behind the plugin's back. A probe that disagrees
-  // with the plugin's intent twice in a row is a stable external change, so
-  // take control back. Skipped while an apply of our own is in flight, so we
-  // never fight ourselves.
+  // Re-assert against an external writer (e.g. the nightlight shortcut): two
+  // consecutive disagreements mean a stable external change. Skipped while our
+  // own apply is in flight.
   function guardTemperature(reading) {
     if (!stateLoaded || applyProcess.running) return
     var match = String(reading).match(/[0-9]+/)
-    // -1 is a sentinel that never equals a real temperature (2000..6500), so
-    // a stopped daemon or malformed reply counts as a disagreement.
+    // -1 never equals a real temperature, so a stopped daemon or bad reply counts as a disagreement.
     var current = match ? Number(match[0]) : -1
     var intended = temperature
     if (current === intended) {
@@ -170,8 +151,7 @@ Panel {
     }
   }
 
-  // The user changed the schedule, so take the window that applies right now
-  // and drop any override along with it.
+  // Schedule changed: take the current window and drop any override.
   function adoptSchedule() {
     if (!stateLoaded || !scheduleEnabled) return
     overrideUntil = 0
@@ -183,9 +163,8 @@ Panel {
   function followScheduleBoundary() {
     if (!stateLoaded || !scheduleEnabled) return
     if (overrideUntil > 0) {
-      // Membership alone cannot see this: a shell suspended across a whole
-      // cycle wakes inside the window it left, having crossed two boundaries.
-      // The override's own expiry instant can.
+      // Membership alone misses a shell suspended across a whole cycle: it wakes
+      // inside the window it left. The override's expiry instant still catches it.
       if (new Date().getTime() < overrideUntil) return
       adoptSchedule()
       return
@@ -194,10 +173,8 @@ Panel {
     adoptSchedule()
   }
 
-  // Codex finding: editing FROM or TO inside the current window left a manual
-  // override standing, because membership had not changed. An edit is an
-  // explicit instruction, so the schedule takes over -- but only on a real
-  // edit, since onEditingFinished also fires on plain focus loss.
+  // Adopt only on a real edit: an edit is an explicit instruction, but
+  // onEditingFinished also fires on plain focus loss.
   function applyScheduleEdit() {
     var edited = fromField.text !== warmFrom || toField.text !== normalAt
     if (!saveSchedule()) return
@@ -241,8 +218,7 @@ Panel {
       scheduleEnabled = state.enabled
       overrideUntil = Math.max(0, Number(state.overrideUntil) || 0)
       scheduledTemperature = snapTemperature(state.temperature)
-      // A stored neutral value (6500) would leave the toggle a silent no-op.
-      // It is never a valid "warm choice", so heal it to a warm default.
+      // A stored neutral value would leave the toggle a silent no-op; heal it warm.
       if (scheduledTemperature >= neutralTemperature) scheduledTemperature = 4000
       warmFrom = state.from
       normalAt = state.to
@@ -260,8 +236,7 @@ Panel {
           overrideUntil = 0
           setActive(state.active === true)
         }
-        // `active` may not have changed, so push the temperature once on startup
-        // to bring a hyprsunset left over from a previous session into line.
+        // Push once even if `active` did not change, to bring a leftover hyprsunset into line.
         applyTemperature(temperature)
       }
       error = ""
@@ -292,9 +267,8 @@ Panel {
     }
   }
 
-  // omarchy.nightlight is disabled in favour of this plugin, so its IPC target
-  // moves here. `omarchy-toggle-nightlight` and anything else built on it keeps
-  // resolving, against a single owner of the daemon.
+  // omarchy.nightlight is disabled, so its IPC target moves here and
+  // omarchy-toggle-nightlight keeps resolving.
   IpcHandler {
     target: "nightlight"
 
@@ -347,8 +321,7 @@ Panel {
     }
   }
 
-  // External-writer guard probe. Reads the daemon's current temperature once
-  // per tick; guardTemperature decides whether to re-assert.
+  // External-writer guard probe; guardTemperature decides whether to re-assert.
   Process {
     id: probeProcess
     command: ["timeout", "1", "hyprctl", "hyprsunset", "temperature"]
@@ -559,7 +532,7 @@ Panel {
             onToggled: {
               root.scheduleEnabled = !root.scheduleEnabled
               if (!root.scheduleEnabled) root.overrideUntil = 0
-              // adoptSchedule reads in-memory state, so it need not await the write
+              // adoptSchedule reads in-memory state, no need to await the write
               if (root.saveSchedule() && root.scheduleEnabled) {
                 root.adoptSchedule()
                 root.saveSchedule()
