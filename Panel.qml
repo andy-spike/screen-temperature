@@ -279,15 +279,15 @@ Panel {
   IpcHandler {
     target: root.moduleName
 
-    function open(): void { root.open() }
-    function close(): void { root.close() }
-    function show(): void { root.open() }
-    function hide(): void { root.close() }
-    function toggle(): string {
+    function open() { root.open() }
+    function close() { root.close() }
+    function show() { root.open() }
+    function hide() { root.close() }
+    function toggle() {
       root.saveActive(!root.active)
       return root.active ? "enabled" : "disabled"
     }
-    function status(): string {
+    function status() {
       return JSON.stringify({ enabled: root.active, temperature: root.temperature })
     }
   }
@@ -298,19 +298,19 @@ Panel {
   IpcHandler {
     target: "nightlight"
 
-    function status(): string {
+    function status() {
       return JSON.stringify({ enabled: root.active, temperature: root.temperature })
     }
-    function refresh(): void { root.refresh() }
-    function enable(): string {
+    function refresh() { root.refresh() }
+    function enable() {
       root.saveActive(true)
       return root.active ? "enabled" : "disabled"
     }
-    function disable(): string {
+    function disable() {
       root.saveActive(false)
       return "disabled"
     }
-    function toggle(): string {
+    function toggle() {
       root.saveActive(!root.active)
       return root.active ? "enabled" : "disabled"
     }
