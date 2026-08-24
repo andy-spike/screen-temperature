@@ -174,15 +174,22 @@ Panel {
   }
 
   // Adopt only on a real edit: an edit is an explicit instruction, but
-  // onEditingFinished also fires on plain focus loss.
+  // onEditingFinished also fires on plain focus loss and on Return (after
+  // onAccepted), so this must stay a no-op when nothing changed.
   function applyScheduleEdit() {
-    var edited = fromField.text !== warmFrom || toField.text !== normalAt
-    if (!saveSchedule()) return
-    if (edited) {
-      adoptSchedule()
-      saveSchedule()
-      confirmSaved()
+    if (!ScheduleModel.isValidClock(fromField.text) || !ScheduleModel.isValidClock(toField.text)) {
+      error = "Use 24-hour time, such as 19:00."
+      return
     }
+    error = ""
+    var edited = fromField.text !== warmFrom || toField.text !== normalAt
+    warmFrom = fromField.text
+    normalAt = toField.text
+    if (!edited) return
+    // Adopt first, then one write, so the persisted state matches the new window.
+    adoptSchedule()
+    saveSchedule()
+    confirmSaved()
   }
 
   function confirmSaved() {
@@ -573,7 +580,7 @@ Panel {
               width: parent.width
               text: root.warmFrom
               placeholderText: "19:00"
-              foreground: root.bar.foreground
+              foreground: ScheduleModel.isValidClock(text) ? root.bar.foreground : root.bar.urgent
               font.family: root.bar.fontFamily
               onAccepted: root.applyScheduleEdit()
               onEditingFinished: root.applyScheduleEdit()
@@ -595,7 +602,7 @@ Panel {
               width: parent.width
               text: root.normalAt
               placeholderText: "04:00"
-              foreground: root.bar.foreground
+              foreground: ScheduleModel.isValidClock(text) ? root.bar.foreground : root.bar.urgent
               font.family: root.bar.fontFamily
               onAccepted: root.applyScheduleEdit()
               onEditingFinished: root.applyScheduleEdit()
