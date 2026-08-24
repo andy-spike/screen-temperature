@@ -20,6 +20,7 @@ Panel {
   property string warmFrom: "19:00"
   property string normalAt: "04:00"
   property string error: ""
+  property string done: ""
   property bool stateLoaded: false
   property bool scheduledPeriodActive: false
   property bool saveQueued: false
@@ -181,7 +182,13 @@ Panel {
     if (edited) {
       adoptSchedule()
       saveSchedule()
+      confirmSaved()
     }
+  }
+
+  function confirmSaved() {
+    done = "Schedule saved."
+    doneTimer.start()
   }
 
   function saveSchedule() {
@@ -312,6 +319,7 @@ Panel {
     onExited: function(code) {
       if (code !== 0) {
         root.error = "Could not save the Hyprsunset schedule."
+        root.done = ""
         return
       }
       if (root.saveQueued) {
@@ -347,6 +355,12 @@ Panel {
     repeat: true
     running: root.stateLoaded
     onTriggered: root.followScheduleBoundary()
+  }
+
+  Timer {
+    id: doneTimer
+    interval: 2500
+    onTriggered: root.done = ""
   }
 
   BarIconButton {
@@ -594,11 +608,11 @@ Panel {
       }
 
       Text {
-        visible: root.error !== "" || root.applyFailed
+        visible: root.error !== "" || root.applyFailed || root.done !== ""
         width: parent.width
         wrapMode: Text.Wrap
-        text: root.applyFailed ? "Could not reach hyprsunset." : root.error
-        color: root.bar.urgent
+        text: root.applyFailed ? "Could not reach hyprsunset." : root.error !== "" ? root.error : root.done
+        color: root.error !== "" || root.applyFailed ? root.bar.urgent : root.bar.foreground
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
       }
