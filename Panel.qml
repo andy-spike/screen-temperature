@@ -577,6 +577,8 @@ Panel {
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
               inputMethodHints: Qt.ImhTime
+              selectByMouse: true
+              onActiveFocusChanged: if (activeFocus) Qt.callLater(selectAll)
               onAccepted: root.applyScheduleEdit()
               onEditingFinished: root.applyScheduleEdit()
             }
@@ -600,6 +602,8 @@ Panel {
               foreground: root.bar.foreground
               font.family: root.bar.fontFamily
               inputMethodHints: Qt.ImhTime
+              selectByMouse: true
+              onActiveFocusChanged: if (activeFocus) Qt.callLater(selectAll)
               onAccepted: root.applyScheduleEdit()
               onEditingFinished: root.applyScheduleEdit()
             }
