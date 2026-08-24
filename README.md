@@ -16,8 +16,19 @@ Control Hyprsunset temperature and schedule from the Omarchy bar.
 - `hyprsunset` (ships with Hyprland on Omarchy).
 - `python3`, `bash`, and coreutils (`timeout`, `grep`, `pkill`, `sleep`).
 
-The plugin owns the Hyprsunset daemon and the Nightlight IPC target. You must
-disable the built-in Nightlight plugin, or two plugins fight over the daemon.
+The plugin owns the Hyprsunset daemon and the Nightlight IPC target. The
+built-in Nightlight plugin must be disabled, or two plugins fight over the
+daemon. See [Install](#install).
+
+## Install
+
+```sh
+omarchy plugin add https://github.com/andy-spike/screen-temperature.git --enable
+```
+
+This adds the widget to the right side of the bar.
+
+Disable the built-in Nightlight plugin:
 
 1. Open `~/.config/omarchy/shell.json`.
 2. Find the `disabledPlugins` list near the end of the file.
@@ -30,14 +41,6 @@ disable the built-in Nightlight plugin, or two plugins fight over the daemon.
    ```
 
 4. Save the file. The shell reads the change without a restart.
-
-## Install
-
-```sh
-omarchy plugin add https://github.com/andy-spike/screen-temperature.git --enable
-```
-
-This adds the widget to the right side of the bar.
 
 ## Remove
 
