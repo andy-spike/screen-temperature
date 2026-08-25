@@ -1,20 +1,19 @@
 # Screen Temperature
 
-Control Hyprsunset temperature and schedule from the Omarchy bar.
+Control the Hyprsunset screen temperature from the Omarchy bar.
 
 ## Features
 
 - Toggle warm light on and off from the bar button.
 - Adjust temperature with the mouse wheel or the panel slider.
-- Run a daily schedule: warm in the evening, neutral in the night.
-- Keep manual changes until the next schedule boundary.
+- Follow a `hyprsunset` schedule, so the panel shows what is actually on screen.
 - Answer the Nightlight IPC target, so `omarchy toggle nightlight` and `omarchy-toggle-nightlight` keep working.
 
 ## Requirements
 
 - Omarchy with the Quickshell shell.
 - `hyprsunset` (ships with Hyprland on Omarchy).
-- `python3`, `bash`, and coreutils (`timeout`, `grep`, `pkill`, `sleep`).
+- `bash` and coreutils (`timeout`, `grep`, `pkill`, `sleep`).
 
 The plugin owns the Hyprsunset daemon and the Nightlight IPC target. The
 built-in Nightlight plugin must be disabled, or two plugins fight over the
@@ -59,17 +58,51 @@ is safe to delete.
 | Right click | Toggle warm light |
 | Mouse wheel | Adjust temperature by one step |
 | Panel slider | Pick a temperature |
-| Schedule switch | Enable or disable the schedule |
-| FROM / TO fields | Edit the warm window (24-hour time, e.g. `19:00`) |
+| Panel switch | Toggle warm light |
 
-The default schedule is warm from `19:00` to `04:00`. A manual change
-overrides the schedule until the next boundary, then the schedule resumes.
-Neutral temperature is 6500 K, which means the filter is off.
+Temperature moves in fixed steps from 2000 K to 6500 K. Neutral is 6500 K,
+which means the filter is off; picking it turns the widget off and keeps the
+previous warm value for the next toggle.
+
+## Schedule
+
+Scheduling belongs to `hyprsunset`, not to this plugin. Put profiles in
+`~/.config/hypr/hyprsunset.conf`:
+
+```
+profile {
+    time = 19:00
+    temperature = 3000
+}
+profile {
+    time = 04:00
+    temperature = 6500
+}
+```
+
+The panel follows the daemon: when a profile fires, the readout, the slider,
+and the bar icon move to match it. A change you make by hand holds until the
+next profile time, because `hyprsunset` applies a profile only at its boundary.
+
+Write the neutral profile as `temperature = 6500`, not `identity = true`.
+`hyprctl hyprsunset temperature` reports the last temperature that was *set*,
+so an identity profile reads back as the previous warm value and the panel
+would show a filter that is not on screen.
+
+Restart the daemon after editing the file; it reads the config at startup.
 
 ## State
 
-State lives in `~/.config/omarchy/screen-temperature.json`. The plugin writes
-only this file and never touches other user configuration.
+State lives in `~/.config/omarchy/screen-temperature.json`, written directly
+by the panel. The plugin writes only this file and never touches other user
+configuration.
+
+## Development
+
+```sh
+node test_temperature_steps.js   # step snapping and naming
+./reload.sh                      # install into the running shell and restart it
+```
 
 ## License
 

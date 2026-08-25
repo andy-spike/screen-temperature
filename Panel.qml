@@ -3,7 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
-import "ScheduleModel.js" as ScheduleModel
+import "TemperatureSteps.js" as Steps
 
 Panel {
   id: root
@@ -11,85 +11,84 @@ Panel {
   ipcTarget: moduleName
   manageIpc: false
 
-  readonly property string helper: Qt.resolvedUrl("schedule.py").toString().replace("file://", "")
-  // The toggle owns `active`: probing the daemon would let a stale reading undo it.
+  // Set by you, and by adoptReading() when hyprsunset changes the screen itself.
   property bool active: false
-  property int scheduledTemperature: 3000
-  property bool scheduleEnabled: true
-  property string warmFrom: "19:00"
-  property string normalAt: "04:00"
-  property string error: ""
-  property string done: ""
-  property bool stateLoaded: false
-  property bool scheduledPeriodActive: false
-  property bool saveQueued: false
+  property int warmTemperature: 4000
+  property bool loaded: false
   property int pendingTemperature: -1
-  // Epoch ms when a manual override hands control back to the schedule; 0 = none.
-  property real overrideUntil: 0
   property bool applyFailed: false
-  // Last reading that disagreed with our intent; the guard needs two in a row.
+  // Last reading that disagreed with our state; the guard adopts on two in a row.
   property int lastProbe: -1
 
-  readonly property int neutralTemperature: temperatureSteps[temperatureSteps.length - 1]
-  readonly property int temperature: active ? scheduledTemperature : neutralTemperature
+  readonly property var temperatureSteps: Steps.steps
+  readonly property int neutralTemperature: Steps.neutral()
+  readonly property int temperature: active ? warmTemperature : neutralTemperature
+  readonly property string temperatureName: Steps.nameFor(temperature)
+
+  // True only while adoptReading() is assigning, so following the daemon does
+  // not write straight back to it. QML emits property change signals
+  // synchronously, so the flag is still set when the handler below runs.
+  property bool adopting: false
 
   // One apply per state change, no ramp: a ramp fired ~25 hyprctl calls per toggle
   // and spawned duplicate hyprsunsets fighting over the socket.
-  onTemperatureChanged: if (stateLoaded) applyTemperature(temperature)
-  readonly property string temperatureName: nameForTemperature(temperature)
+  onTemperatureChanged: if (loaded && !adopting) applyTemperature(temperature)
 
-  function nameForTemperature(value) {
-    if (value >= 6000) return "NEUTRAL"
-    if (value >= 4500) return "SOFT"
-    if (value >= 3200) return "WARM"
-    return "AMBER"
+  // Our own file, written straight from QML. Writing the widget's shell.json
+  // entry instead would make the shell reload its config on every step, which
+  // rebuilds the bar widget and drops the pointer grab mid-scroll: the wheel
+  // then goes dead until the mouse moves.
+  readonly property string statePath: Quickshell.env("HOME") + "/.config/omarchy/screen-temperature.json"
+
+  function persist() {
+    stateFile.setText(JSON.stringify({ active: active, temperature: warmTemperature }, null, 2) + "\n")
   }
 
-  // hyprsunset dislikes a firehose of changes, so the slider stops on fixed steps.
-  readonly property var temperatureSteps: [2000, 2500, 3000, 3500, 4000, 4500, 5000, 5500, 6000, 6500]
-
-  function stepIndexFor(value) {
-    var best = 0
-    for (var i = 1; i < temperatureSteps.length; i++)
-      if (Math.abs(temperatureSteps[i] - value) < Math.abs(temperatureSteps[best] - value)) best = i
-    return best
-  }
-
-  function stepTemperature(index) {
-    return temperatureSteps[Math.max(0, Math.min(temperatureSteps.length - 1, index))]
-  }
-
-  function snapTemperature(value) {
-    return temperatureSteps[stepIndexFor(value)]
+  function load(text) {
+    if (loaded) return
+    var state = {}
+    try {
+      state = JSON.parse(text) || {}
+    } catch (e) {
+      state = {}
+    }
+    warmTemperature = Steps.snap(Number(state.temperature) || 4000)
+    // A stored neutral value would leave the toggle a silent no-op; heal it warm.
+    if (warmTemperature >= neutralTemperature) warmTemperature = 4000
+    active = state.active === true
+    loaded = true
+    // No apply here: hyprsunset has already put its own profile on the screen by
+    // the time the shell starts, and the first probe adopts whatever that is. A
+    // daemon that is not running at all is caught by the guard instead.
   }
 
   function setActive(value) {
-    active = value && scheduledTemperature < neutralTemperature
+    active = value && warmTemperature < neutralTemperature
   }
 
   function setTemperature(value) {
-    var snapped = snapTemperature(value)
+    var snapped = Steps.snap(value)
     // Neutral (6500) means off; keep the stored warm value for the next toggle.
     if (snapped >= neutralTemperature) {
-      overrideActive(false)
+      setActive(false)
       return
     }
-    scheduledTemperature = snapped
-    overrideActive(true)
-  }
-
-  function nudgeTemperature(direction) {
-    saveTemperature(stepTemperature(stepIndexFor(temperature) + direction))
+    warmTemperature = snapped
+    setActive(true)
   }
 
   function saveTemperature(value) {
     setTemperature(value)
-    saveSchedule()
+    persist()
   }
 
   function saveActive(value) {
-    overrideActive(value)
-    saveSchedule()
+    setActive(value)
+    persist()
+  }
+
+  function nudgeTemperature(direction) {
+    saveTemperature(Steps.stepFrom(temperature, direction))
   }
 
   // Sole writer of the temperature: omarchy.nightlight is disabled, so nothing
@@ -124,145 +123,61 @@ Panel {
     applyProcess.running = true
   }
 
-  // A manual change holds until the next boundary, then the schedule resumes.
-  function overrideActive(value) {
-    setActive(value)
-    overrideUntil = scheduleEnabled ? ScheduleModel.nextBoundary(new Date(), warmFrom, normalAt) : 0
+  // Take the daemon's reading as our own state. hyprsunset owns the schedule, so
+  // a temperature we did not set is a profile firing, not an intruder.
+  //
+  // Adopted values are not snapped: a profile may sit between our steps, and
+  // writing a snapped value back would overwrite what the config asked for. The
+  // slider shows the nearest step, the readout shows the truth.
+  function adoptReading(value) {
+    adopting = true
+    if (value >= neutralTemperature) active = false
+    else {
+      warmTemperature = value
+      active = true
+    }
+    adopting = false
   }
 
-  // Re-assert against an external writer (e.g. the nightlight shortcut): two
-  // consecutive disagreements mean a stable external change. Skipped while our
-  // own apply is in flight.
+  function probe() {
+    if (applyProcess.running || probeProcess.running) return
+    probeProcess.running = true
+  }
+
+  // Follow hyprsunset rather than fight it. Skipped while our own apply is in
+  // flight, so we never adopt a value we are in the middle of replacing.
   function guardTemperature(reading) {
-    if (!stateLoaded || applyProcess.running) return
-    var match = String(reading).match(/[0-9]+/)
-    // -1 never equals a real temperature, so a stopped daemon or bad reply counts as a disagreement.
-    var current = match ? Number(match[0]) : -1
-    var intended = temperature
-    if (current === intended) {
+    if (!loaded || applyProcess.running) return
+    // A real reply is a bare number. hyprctl prints its "Couldn't connect"
+    // error on stdout, not stderr, and the socket path inside it is full of
+    // digits, so searching for any number reads one of those as a temperature
+    // and adopts a dead daemon as "off" instead of restarting it.
+    var text = String(reading).trim()
+    if (!/^[0-9]+$/.test(text)) {
+      lastProbe = -1
+      applyTemperature(temperature)
+      return
+    }
+    var current = Number(text)
+    if (current === temperature) {
       lastProbe = -1
       return
     }
+    // Two probes agreeing rules out catching the daemon mid-change.
     if (current === lastProbe) {
       lastProbe = -1
-      applyTemperature(intended)
+      adoptReading(current)
     } else {
       lastProbe = current
-    }
-  }
-
-  // Schedule changed: take the current window and drop any override.
-  function adoptSchedule() {
-    if (!stateLoaded || !scheduleEnabled) return
-    overrideUntil = 0
-    scheduledPeriodActive = ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt)
-    setActive(scheduledPeriodActive)
-  }
-
-  // The clock advanced.
-  function followScheduleBoundary() {
-    if (!stateLoaded || !scheduleEnabled) return
-    if (overrideUntil > 0) {
-      // Membership alone misses a shell suspended across a whole cycle: it wakes
-      // inside the window it left. The override's expiry instant still catches it.
-      if (new Date().getTime() < overrideUntil) return
-      adoptSchedule()
-      return
-    }
-    if (ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt) === scheduledPeriodActive) return
-    adoptSchedule()
-  }
-
-  // Adopt only on a real edit: an edit is an explicit instruction, but
-  // onEditingFinished also fires on plain focus loss and on Return (after
-  // onAccepted), so this must stay a no-op when nothing changed.
-  function applyScheduleEdit() {
-    if (!ScheduleModel.isValidClock(fromField.text) || !ScheduleModel.isValidClock(toField.text)) {
-      error = "Use 24-hour time, such as 19:00."
-      return
-    }
-    error = ""
-    var edited = fromField.text !== warmFrom || toField.text !== normalAt
-    warmFrom = fromField.text
-    normalAt = toField.text
-    if (!edited) return
-    // Adopt first, then one write, so the persisted state matches the new window.
-    adoptSchedule()
-    saveSchedule()
-    confirmSaved()
-  }
-
-  function confirmSaved() {
-    done = "Schedule saved."
-    doneTimer.start()
-  }
-
-  function saveSchedule() {
-    if (!ScheduleModel.isValidClock(fromField.text) || !ScheduleModel.isValidClock(toField.text)) {
-      error = "Use 24-hour time, such as 19:00."
-      return false
-    }
-    error = ""
-    warmFrom = fromField.text
-    normalAt = toField.text
-    if (saveProcess.running) {
-      saveQueued = true
-      return true
-    }
-    saveProcess.command = ["python3", helper, "--set",
-      "--enabled", scheduleEnabled ? "true" : "false",
-      "--active", active ? "true" : "false",
-      "--override-until", String(Math.max(0, Math.floor(overrideUntil))),
-      "--temperature", String(scheduledTemperature),
-      "--from", warmFrom, "--to", normalAt]
-    saveProcess.running = true
-    return true
-  }
-
-  function refresh() {
-    if (!readProcess.running) readProcess.running = true
-  }
-
-  function loadState(text) {
-    if (saveProcess.running || saveQueued) return
-    try {
-      var state = JSON.parse(text)
-      var firstLoad = !stateLoaded
-      scheduleEnabled = state.enabled
-      overrideUntil = Math.max(0, Number(state.overrideUntil) || 0)
-      scheduledTemperature = snapTemperature(state.temperature)
-      // A stored neutral value would leave the toggle a silent no-op; heal it warm.
-      if (scheduledTemperature >= neutralTemperature) scheduledTemperature = 4000
-      warmFrom = state.from
-      normalAt = state.to
-      fromField.text = warmFrom
-      toField.text = normalAt
-      stateLoaded = true
-      scheduledPeriodActive = ScheduleModel.isScheduledPeriod(new Date(), warmFrom, normalAt)
-      if (firstLoad) {
-        if (scheduleEnabled && (overrideUntil > new Date().getTime() || warmFrom === normalAt))
-          setActive(state.active === true)
-        else if (scheduleEnabled) {
-          overrideUntil = 0
-          setActive(scheduledPeriodActive)
-        } else {
-          overrideUntil = 0
-          setActive(state.active === true)
-        }
-        // Push once even if `active` did not change, to bring a leftover hyprsunset into line.
-        applyTemperature(temperature)
-      }
-      error = ""
-    } catch (e) {
-      error = "Could not read the Hyprsunset schedule."
     }
   }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  onOpenedChanged: if (opened) refresh()
-  Component.onCompleted: refresh()
+  // Changing a running Timer's interval restarts its countdown, so opening the
+  // panel would otherwise wait 2s for its first reading.
+  onOpenedChanged: if (opened) probe()
 
   IpcHandler {
     target: root.moduleName
@@ -288,7 +203,9 @@ Panel {
     function status() {
       return JSON.stringify({ enabled: root.active, temperature: root.temperature })
     }
-    function refresh() { root.refresh() }
+    // omarchy-toggle-nightlight writes the daemon directly, then calls this.
+    // We own the temperature, so put our own value back rather than adopt it.
+    function refresh() { root.applyTemperature(root.temperature) }
     function enable() {
       root.saveActive(true)
       return root.active ? "enabled" : "disabled"
@@ -303,13 +220,14 @@ Panel {
     }
   }
 
-  Process {
-    id: readProcess
-    command: ["python3", root.helper]
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.loadState(text)
-    }
+  FileView {
+    id: stateFile
+    path: root.statePath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    onLoaded: root.load(text())
+    onLoadFailed: root.load("")
   }
 
   Process {
@@ -320,22 +238,7 @@ Panel {
     }
   }
 
-  Process {
-    id: saveProcess
-    onExited: function(code) {
-      if (code !== 0) {
-        root.error = "Could not save the Hyprsunset schedule."
-        root.done = ""
-        return
-      }
-      if (root.saveQueued) {
-        root.saveQueued = false
-        root.saveSchedule()
-      }
-    }
-  }
-
-  // External-writer guard probe; guardTemperature decides whether to re-assert.
+  // Schedule follower; guardTemperature decides whether to adopt the reading.
   Process {
     id: probeProcess
     command: ["timeout", "1", "hyprctl", "hyprsunset", "temperature"]
@@ -346,27 +249,15 @@ Panel {
     stderr: StdioCollector { waitForEnd: true }
   }
 
+  // Probing keeps the display honest, and the panel is the display. A closed
+  // panel only needs a cycle slow enough to notice a profile change and to find
+  // a dead daemon; an open one has to feel live. Each probe spawns hyprctl, so
+  // the slow cycle is ~30x fewer spawns a day than a flat 2s one.
   Timer {
-    id: guardTimer
-    interval: 2000
+    interval: root.opened ? 2000 : 30000
     repeat: true
-    running: root.stateLoaded
-    onTriggered: {
-      if (!applyProcess.running && !probeProcess.running) probeProcess.running = true
-    }
-  }
-
-  Timer {
-    interval: 15000
-    repeat: true
-    running: root.stateLoaded
-    onTriggered: root.followScheduleBoundary()
-  }
-
-  Timer {
-    id: doneTimer
-    interval: 2500
-    onTriggered: root.done = ""
+    running: root.loaded
+    onTriggered: root.probe()
   }
 
   BarIconButton {
@@ -491,7 +382,6 @@ Panel {
         }
 
         PanelSlider {
-          id: temperatureSlider
           width: parent.width
           bar: root.bar
           minimum: 0
@@ -499,9 +389,9 @@ Panel {
           step: 1
           integer: true
           tickCount: root.temperatureSteps.length
-          value: root.stepIndexFor(root.temperature)
-          onMoved: function(index) { root.setTemperature(root.stepTemperature(index)) }
-          onReleased: function(index) { root.saveTemperature(root.stepTemperature(index)) }
+          value: Steps.indexFor(root.temperature)
+          onMoved: function(index) { root.setTemperature(Steps.at(index)) }
+          onReleased: function(index) { root.saveTemperature(Steps.at(index)) }
         }
 
         Item {
@@ -526,97 +416,12 @@ Panel {
         }
       }
 
-      PanelSeparator { foreground: root.bar.foreground }
-
-      Column {
-        width: parent.width
-        spacing: Style.space(8)
-
-        Item {
-          width: parent.width
-          implicitHeight: Math.max(scheduleHeader.implicitHeight, scheduleSwitch.implicitHeight)
-          PanelSectionHeader {
-            id: scheduleHeader
-            text: "SCHEDULE"
-            foreground: root.bar.foreground
-            fontFamily: root.bar.fontFamily
-            anchors.left: parent.left
-            anchors.verticalCenter: parent.verticalCenter
-          }
-          ToggleSwitch {
-            id: scheduleSwitch
-            checked: root.scheduleEnabled
-            foreground: root.bar.foreground
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            onToggled: {
-              root.scheduleEnabled = !root.scheduleEnabled
-              if (!root.scheduleEnabled) root.overrideUntil = 0
-              // adoptSchedule reads in-memory state, no need to await the write
-              if (root.saveSchedule() && root.scheduleEnabled) {
-                root.adoptSchedule()
-                root.saveSchedule()
-              }
-            }
-          }
-        }
-
-        Row {
-          width: parent.width
-          spacing: Style.space(12)
-
-          Column {
-            width: Math.floor((parent.width - parent.spacing) / 2)
-            spacing: Style.space(4)
-            Text {
-              text: "FROM"
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-            TimeField {
-              id: fromField
-              width: parent.width
-              text: root.warmFrom
-              placeholderText: "19:00"
-              foreground: ScheduleModel.isValidClock(text) ? root.bar.foreground : root.bar.urgent
-              font.family: root.bar.fontFamily
-              onAccepted: root.applyScheduleEdit()
-              onEditingFinished: root.applyScheduleEdit()
-            }
-          }
-
-          Column {
-            width: Math.floor((parent.width - parent.spacing) / 2)
-            spacing: Style.space(4)
-            Text {
-              text: "TO"
-              color: Qt.darker(root.bar.foreground, 1.4)
-              font.family: root.bar.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-            }
-            TimeField {
-              id: toField
-              width: parent.width
-              text: root.normalAt
-              placeholderText: "04:00"
-              foreground: ScheduleModel.isValidClock(text) ? root.bar.foreground : root.bar.urgent
-              font.family: root.bar.fontFamily
-              onAccepted: root.applyScheduleEdit()
-              onEditingFinished: root.applyScheduleEdit()
-            }
-          }
-        }
-      }
-
       Text {
-        visible: root.error !== "" || root.applyFailed || root.done !== ""
+        visible: root.applyFailed
         width: parent.width
         wrapMode: Text.Wrap
-        text: root.applyFailed ? "Could not reach hyprsunset." : root.error !== "" ? root.error : root.done
-        color: root.error !== "" || root.applyFailed ? root.bar.urgent : root.bar.foreground
+        text: "Could not reach hyprsunset."
+        color: root.bar.urgent
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
       }

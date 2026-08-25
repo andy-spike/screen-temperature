@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Copy the repo's plugin files into the installed plugin folder, then
-# reload the plugin in the running Omarchy shell.
+# Copy the repo's plugin files into the installed plugin folder, then restart
+# the Omarchy shell so the new QML is actually loaded.
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")" && pwd)"
@@ -9,10 +9,9 @@ target="$HOME/.config/omarchy/plugins/io.github.andy-spike.screen-temperature"
 # Runtime files only; README, LICENSE, and tests are not loaded by the shell.
 cp "$repo/manifest.json" \
    "$repo/Panel.qml" \
-   "$repo/TimeField.qml" \
-   "$repo/ScheduleModel.js" \
-   "$repo/schedule.py" \
+   "$repo/TemperatureSteps.js" \
    "$target/"
 
-# Hot-reload on save is automatic; rescan forces plugin re-discovery too.
-omarchy-shell -q shell rescanPlugins
+# A restart, not a rescan: rescanPlugins re-discovers plugins but leaves an
+# already-instantiated panel running its old QML, so edits appear to do nothing.
+omarchy-restart-shell
