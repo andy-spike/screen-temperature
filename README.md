@@ -97,10 +97,15 @@ State lives in `~/.config/omarchy/screen-temperature.json`, written directly
 by the panel. The plugin writes only this file and never touches other user
 configuration.
 
+The path is predictable, so the panel treats the file as untrusted input: it is
+read only when it is under 4 KB, which no state of ours ever reaches. A larger
+file at that path is emptied and the panel starts from defaults.
+
 ## Development
 
 ```sh
 node test_temperature_steps.js   # step snapping and naming
+./test_state_guard.sh            # size cap on the state file
 ./reload.sh                      # install into the running shell and restart it
 ```
 

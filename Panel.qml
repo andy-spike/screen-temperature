@@ -220,9 +220,26 @@ Panel {
     }
   }
 
+  // The state file sits at a predictable path, so it is untrusted input: any
+  // process running as this user can put something else there first. FileView
+  // reads the whole file the moment it has a path, and a 600 MB file lands in
+  // the shell as a 1.2 GB string before JSON.parse ever runs. Our two keys never
+  // reach a hundred bytes, so anything past the cap is not our state: empty it,
+  // and let the load below fall back to defaults. timeout bounds the check, and
+  // FileView itself refuses a FIFO, so a swapped-in pipe cannot stall the shell.
+  Process {
+    id: stateGuard
+    running: true
+    command: ["timeout", "1", "sh", "-c",
+      "s=$(stat -Lc%s \"$0\" 2>/dev/null) || exit 0; [ \"$s\" -le 4096 ] || : > \"$0\"",
+      root.statePath]
+    // Only now, and whatever the check did: an unreadable path fails the load.
+    onExited: stateFile.path = root.statePath
+  }
+
   FileView {
     id: stateFile
-    path: root.statePath
+    // path is set by stateGuard, never here. See the comment above.
     watchChanges: false
     atomicWrites: true
     printErrors: false
