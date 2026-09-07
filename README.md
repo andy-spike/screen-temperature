@@ -13,7 +13,7 @@ Control the Hyprsunset screen temperature from the Omarchy bar.
 
 - Omarchy with the Quickshell shell.
 - `hyprsunset` (ships with Hyprland on Omarchy).
-- `bash` and coreutils (`timeout`, `grep`, `pkill`, `sleep`).
+- `bash`, Python 3, and coreutils (`timeout`, `grep`, `pkill`, `sleep`).
 
 The plugin owns the Hyprsunset daemon and the Nightlight IPC target. The
 built-in Nightlight plugin must be disabled, or two plugins fight over the
@@ -97,15 +97,16 @@ State lives in `~/.config/omarchy/screen-temperature.json`, written directly
 by the panel. The plugin writes only this file and never touches other user
 configuration.
 
-The path is predictable, so the panel treats the file as untrusted input: it is
-read only when it is under 4 KB, which no state of ours ever reaches. A larger
-file at that path is emptied and the panel starts from defaults.
+The path is predictable, so the panel treats the file as untrusted input. A
+helper opens it without following links, verifies that it is a regular file,
+and reads at most 4 KB through the same descriptor. Invalid state is left alone
+and the panel starts from defaults.
 
 ## Development
 
 ```sh
 node test_temperature_steps.js   # step snapping and naming
-./test_state_guard.sh            # size cap on the state file
+python3 test_state_file.py       # safe, bounded state-file access
 ./reload.sh                      # install into the running shell and restart it
 ```
 

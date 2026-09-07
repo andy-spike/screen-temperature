@@ -17,6 +17,7 @@ Panel {
   property bool loaded: false
   property int pendingTemperature: -1
   property bool applyFailed: false
+  property string pendingState: ""
   // Last reading that disagreed with our state; the guard adopts on two in a row.
   property int lastProbe: -1
 
@@ -39,9 +40,18 @@ Panel {
   // rebuilds the bar widget and drops the pointer grab mid-scroll: the wheel
   // then goes dead until the mouse moves.
   readonly property string statePath: Quickshell.env("HOME") + "/.config/omarchy/screen-temperature.json"
+  readonly property string stateHelper: decodeURIComponent(String(Qt.resolvedUrl("state_file.py")).replace(/^file:\/\//, ""))
 
   function persist() {
-    stateFile.setText(JSON.stringify({ active: active, temperature: warmTemperature }, null, 2) + "\n")
+    pendingState = JSON.stringify({ active: active, temperature: warmTemperature }, null, 2) + "\n"
+    if (!stateWriter.running) writeState()
+  }
+
+  function writeState() {
+    var contents = pendingState
+    pendingState = ""
+    stateWriter.command = ["python3", stateHelper, "write", statePath, contents]
+    stateWriter.running = true
   }
 
   function load(text) {
@@ -144,6 +154,13 @@ Panel {
     probeProcess.running = true
   }
 
+  function adoptNightlightRefresh(reading) {
+    var text = String(reading).trim()
+    if (!/^[0-9]+$/.test(text)) return
+    adoptReading(Number(text))
+    persist()
+  }
+
   // Follow hyprsunset rather than fight it. Skipped while our own apply is in
   // flight, so we never adopt a value we are in the middle of replacing.
   function guardTemperature(reading) {
@@ -203,9 +220,11 @@ Panel {
     function status() {
       return JSON.stringify({ enabled: root.active, temperature: root.temperature })
     }
-    // omarchy-toggle-nightlight writes the daemon directly, then calls this.
-    // We own the temperature, so put our own value back rather than adopt it.
-    function refresh() { root.applyTemperature(root.temperature) }
+    // omarchy-toggle-nightlight writes and verifies the daemon before calling
+    // this, so one reading is enough to adopt and persist its result.
+    function refresh() {
+      if (!nightlightRefresh.running) nightlightRefresh.running = true
+    }
     function enable() {
       root.saveActive(true)
       return root.active ? "enabled" : "disabled"
@@ -220,31 +239,21 @@ Panel {
     }
   }
 
-  // The state file sits at a predictable path, so it is untrusted input: any
-  // process running as this user can put something else there first. FileView
-  // reads the whole file the moment it has a path, and a 600 MB file lands in
-  // the shell as a 1.2 GB string before JSON.parse ever runs. Our two keys never
-  // reach a hundred bytes, so anything past the cap is not our state: empty it,
-  // and let the load below fall back to defaults. timeout bounds the check, and
-  // FileView itself refuses a FIFO, so a swapped-in pipe cannot stall the shell.
+  // Open, validate, and read through one descriptor. The helper rejects links,
+  // non-regular files, and anything over 4 KB without resolving the path twice.
   Process {
-    id: stateGuard
+    id: stateReader
     running: true
-    command: ["timeout", "1", "sh", "-c",
-      "s=$(stat -Lc%s \"$0\" 2>/dev/null) || exit 0; [ \"$s\" -le 4096 ] || : > \"$0\"",
-      root.statePath]
-    // Only now, and whatever the check did: an unreadable path fails the load.
-    onExited: stateFile.path = root.statePath
+    command: ["timeout", "1", "python3", root.stateHelper, "read", root.statePath]
+    stdout: StdioCollector { id: stateOutput; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) { root.load(code === 0 ? stateOutput.text : "") }
   }
 
-  FileView {
-    id: stateFile
-    // path is set by stateGuard, never here. See the comment above.
-    watchChanges: false
-    atomicWrites: true
-    printErrors: false
-    onLoaded: root.load(text())
-    onLoadFailed: root.load("")
+  Process {
+    id: stateWriter
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: if (root.pendingState !== "") root.writeState()
   }
 
   Process {
@@ -264,6 +273,16 @@ Panel {
       onStreamFinished: root.guardTemperature(text)
     }
     stderr: StdioCollector { waitForEnd: true }
+  }
+
+  Process {
+    id: nightlightRefresh
+    command: ["timeout", "1", "hyprctl", "hyprsunset", "temperature"]
+    stdout: StdioCollector { id: nightlightRefreshOutput; waitForEnd: true }
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      if (code === 0) root.adoptNightlightRefresh(nightlightRefreshOutput.text)
+    }
   }
 
   // Probing keeps the display honest, and the panel is the display. A closed
