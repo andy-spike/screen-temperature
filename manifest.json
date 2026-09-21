@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.andy-spike.screen-temperature",
   "name": "Screen Temperature",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "author": "Andy Spike",
   "license": "MIT",
   "description": "Control the Hyprsunset screen temperature from the Omarchy bar.",
