@@ -13,7 +13,9 @@ Control the Hyprsunset screen temperature from the Omarchy bar.
 
 - Omarchy with the Quickshell shell.
 - `hyprsunset` (ships with Hyprland on Omarchy).
-- `bash`, Python 3, and coreutils (`timeout`, `grep`, `pkill`, `sleep`).
+- Bash, Python 3, coreutils, grep, procps-ng, util-linux, and UWSM.
+
+The plugin uses the executables installed under `/usr/bin` on Omarchy.
 
 The plugin owns the Hyprsunset daemon and the Nightlight IPC target. The
 built-in Nightlight plugin must be disabled, or two plugins fight over the
@@ -96,17 +98,32 @@ Restart the daemon after editing the file; it reads the config at startup.
 State lives in `~/.config/omarchy/screen-temperature.json`, written directly
 by the panel. The plugin writes only this file and never touches other user
 configuration.
+At startup, the panel applies the saved state. With no saved active state, it
+starts disabled at 6500 K, even if Hyprsunset starts at 6000 K.
 
 The path is predictable, so the panel treats the file as untrusted input. A
 helper opens it without following links, verifies that it is a regular file,
 and reads at most 4 KB through the same descriptor. Invalid state is left alone
 and the panel starts from defaults.
 
+## Child processes
+
+The panel clears the inherited environment before starting each child process.
+It passes only a fixed system `PATH` and the session values needed for state
+files, Hyprland, Wayland, and D-Bus. Commands use absolute executable paths.
+Python runs in isolated mode without site initialization. Bash does not load
+profile files, and its environment does not include startup hooks.
+
+Daemon recovery checks all required tools before stopping Hyprsunset. The
+command sent through UWSM also rebuilds the daemon environment, because UWSM
+has a separate launch environment. A missing tool causes recovery to fail.
+
 ## Development
 
 ```sh
 node test_temperature_steps.js   # step snapping and naming
 python3 test_state_file.py       # safe, bounded state-file access
+python3 test_process_security.py # Quickshell process tests; requires bubblewrap
 ./reload.sh                      # install into the running shell and restart it
 ```
 

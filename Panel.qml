@@ -42,6 +42,19 @@ Panel {
   readonly property string statePath: Quickshell.env("HOME") + "/.config/omarchy/screen-temperature.json"
   readonly property string stateHelper: decodeURIComponent(String(Qt.resolvedUrl("state_file.py")).replace(/^file:\/\//, ""))
 
+  // Start children with only the session values needed for state and IPC.
+  // With clearEnvironment, null copies that one value from the shell.
+  // In particular, never inherit PATH, loader options, or interpreter hooks.
+  readonly property var processEnvironment: ({
+    PATH: "/usr/bin:/bin",
+    HOME: null,
+    XDG_CONFIG_HOME: null,
+    XDG_RUNTIME_DIR: null,
+    WAYLAND_DISPLAY: null,
+    HYPRLAND_INSTANCE_SIGNATURE: null,
+    DBUS_SESSION_BUS_ADDRESS: null
+  })
+
   function persist() {
     pendingState = JSON.stringify({ active: active, temperature: warmTemperature }, null, 2) + "\n"
     if (!stateWriter.running) writeState()
@@ -50,7 +63,7 @@ Panel {
   function writeState() {
     var contents = pendingState
     pendingState = ""
-    stateWriter.command = ["python3", stateHelper, "write", statePath, contents]
+    stateWriter.command = ["/usr/bin/python3", "-I", "-S", stateHelper, "write", statePath, contents]
     stateWriter.running = true
   }
 
@@ -67,9 +80,9 @@ Panel {
     if (warmTemperature >= neutralTemperature) warmTemperature = 4000
     active = state.active === true
     loaded = true
-    // No apply here: hyprsunset has already put its own profile on the screen by
-    // the time the shell starts, and the first probe adopts whatever that is. A
-    // daemon that is not running at all is caught by the guard instead.
+    // The daemon can start at 6000K before its first profile fires. Apply the
+    // saved state now so a disabled plugin starts at neutral (6500K).
+    applyTemperature(temperature)
   }
 
   function setActive(value) {
@@ -105,21 +118,31 @@ Panel {
   // else applies a value behind it. The value arrives as $1, so the script is a constant.
   readonly property string applyScript:
     "t=$1; " +
+    // Fail before stopping a daemon if its recovery tools are unavailable.
+    "for tool in timeout hyprctl grep head pkill setsid uwsm-app env hyprsunset sleep; do " +
+    "[ -x /usr/bin/$tool ] || exit 1; done; " +
     // Bounded: a daemon stopped mid-syscall accepts the connection and never
     // replies, hanging hyprctl instead of failing it.
-    "h() { timeout 1 hyprctl hyprsunset $1 $2 2>/dev/null; }; " +
+    "h() { /usr/bin/timeout 1 /usr/bin/hyprctl hyprsunset $1 $2 2>/dev/null; }; " +
     // pgrep cannot tell a healthy daemon from a dead socket, so the command is
     // the test. Read back too: a fresh hyprsunset applies its boot default over
     // anything set before it started.
-    "ok() { h temperature $t >/dev/null && [ x$(h temperature | grep -oE '[0-9]+' | head -n1) = x$t ]; }; " +
+    "ok() { h temperature $t >/dev/null && [ x$(h temperature | /usr/bin/grep -oE '[0-9]+' | /usr/bin/head -n1) = x$t ]; }; " +
     "ok && exit 0; " +
     // Replace, not add: two daemons contend for one socket. SIGKILL because a
     // stopped process leaves SIGTERM pending forever.
-    "pkill -KILL -x hyprsunset; " +
-    "setsid uwsm-app -- hyprsunset >/dev/null 2>&1 & " +
+    "/usr/bin/pkill -KILL -x hyprsunset; " +
+    // UWSM launches through its daemon, which has a separate environment.
+    // Rebuild the environment there too, before hyprsunset starts.
+    "/usr/bin/setsid /usr/bin/uwsm-app -- /usr/bin/env -i PATH=/usr/bin:/bin " +
+    "HOME=\"$HOME\" XDG_CONFIG_HOME=\"${XDG_CONFIG_HOME:-$HOME/.config}\" " +
+    "XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" WAYLAND_DISPLAY=\"$WAYLAND_DISPLAY\" " +
+    "HYPRLAND_INSTANCE_SIGNATURE=\"$HYPRLAND_INSTANCE_SIGNATURE\" " +
+    "DBUS_SESSION_BUS_ADDRESS=\"$DBUS_SESSION_BUS_ADDRESS\" " +
+    "/usr/bin/hyprsunset >/dev/null 2>&1 & " +
     // Bounded by wall clock, so a machine where hyprsunset never starts fails in seconds.
     "end=$((SECONDS+8)); " +
-    "while [ $SECONDS -lt $end ]; do sleep 0.3; ok && exit 0; done; " +
+    "while [ $SECONDS -lt $end ]; do /usr/bin/sleep 0.3; ok && exit 0; done; " +
     "exit 1"
 
   // One hyprctl at a time; a value arriving mid-apply replaces the pending one.
@@ -129,7 +152,7 @@ Panel {
       return
     }
     pendingTemperature = -1
-    applyProcess.command = ["bash", "-lc", applyScript, "screen-temperature", String(value)]
+    applyProcess.command = ["/usr/bin/bash", "--noprofile", "--norc", "-c", applyScript, "screen-temperature", String(value)]
     applyProcess.running = true
   }
 
@@ -243,8 +266,10 @@ Panel {
   // non-regular files, and anything over 4 KB without resolving the path twice.
   Process {
     id: stateReader
+    clearEnvironment: true
+    environment: root.processEnvironment
     running: true
-    command: ["timeout", "1", "python3", root.stateHelper, "read", root.statePath]
+    command: ["/usr/bin/timeout", "1", "/usr/bin/python3", "-I", "-S", root.stateHelper, "read", root.statePath]
     stdout: StdioCollector { id: stateOutput; waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(code) { root.load(code === 0 ? stateOutput.text : "") }
@@ -252,12 +277,16 @@ Panel {
 
   Process {
     id: stateWriter
+    clearEnvironment: true
+    environment: root.processEnvironment
     stderr: StdioCollector { waitForEnd: true }
     onExited: if (root.pendingState !== "") root.writeState()
   }
 
   Process {
     id: applyProcess
+    clearEnvironment: true
+    environment: root.processEnvironment
     onExited: function(code) {
       root.applyFailed = code !== 0
       if (root.pendingTemperature >= 0) root.applyTemperature(root.pendingTemperature)
@@ -267,7 +296,9 @@ Panel {
   // Schedule follower; guardTemperature decides whether to adopt the reading.
   Process {
     id: probeProcess
-    command: ["timeout", "1", "hyprctl", "hyprsunset", "temperature"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    command: ["/usr/bin/timeout", "1", "/usr/bin/hyprctl", "hyprsunset", "temperature"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.guardTemperature(text)
@@ -277,7 +308,9 @@ Panel {
 
   Process {
     id: nightlightRefresh
-    command: ["timeout", "1", "hyprctl", "hyprsunset", "temperature"]
+    clearEnvironment: true
+    environment: root.processEnvironment
+    command: ["/usr/bin/timeout", "1", "/usr/bin/hyprctl", "hyprsunset", "temperature"]
     stdout: StdioCollector { id: nightlightRefreshOutput; waitForEnd: true }
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(code) {
