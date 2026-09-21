@@ -17,7 +17,7 @@ import tempfile
 REPO = Path(__file__).resolve().parent
 
 
-def exercise(directory, missing=False):
+def exercise(directory, missing=False, startup_disabled=False):
     panel = (REPO / "Panel.qml").read_text()
     logic = panel.split("Panel {", 1)[1].split("  implicitWidth:", 1)[0]
     logic = logic.replace('  moduleName:', '  property string moduleName:')
@@ -40,7 +40,8 @@ ShellRoot {
       if (!root.loaded || stateWriter.running || probeProcess.running ||
           nightlightRefresh.running || applyProcess.running) return
       if (root.stage === 0) {
-        if (root.warmTemperature !== 3500 || !root.active) throw Error("state read failed")
+        if (root.warmTemperature !== 3500 || root.active === STARTUP_DISABLED)
+          throw Error("state read failed")
         root.saveTemperature(4000)
       } else if (root.stage === 1) {
         if (root.applyFailed !== EXPECT_FAILURE) throw Error("wrong apply result")
@@ -57,6 +58,7 @@ ShellRoot {
 }
 '''
     script = script.replace('EXPECT_FAILURE', str(missing).lower())
+    script = script.replace('STARTUP_DISABLED', str(startup_disabled).lower())
     (directory / 'shell.qml').write_text(script)
     for name in ('TemperatureSteps.js', 'state_file.py'):
         shutil.copy2(REPO / name, directory / name)
@@ -65,7 +67,7 @@ ShellRoot {
     home = directory / 'home'
     state = home / '.config/omarchy/screen-temperature.json'
     state.parent.mkdir(parents=True, exist_ok=True)
-    state.write_text('{"active":true,"temperature":3500}')
+    state.write_text(json.dumps({'active': not startup_disabled, 'temperature': 3500}))
     marker = directory / 'injected'
     poison = directory / 'poison'
     poison.mkdir(exist_ok=True)
@@ -81,7 +83,7 @@ ShellRoot {
     (poison / 'sitecustomize.py').write_text(f'open({str(marker)!r}, "a").write("python startup")')
     log = directory / 'commands.jsonl'
     temperature = directory / 'temperature'
-    temperature.write_text('6500')
+    temperature.write_text('6000')
     ready = directory / 'ready'
     # Force recovery through pkill, setsid, uwsm-app, and the daemon launch.
     mock = directory / 'desktop-command'
@@ -139,6 +141,10 @@ elif name == 'hyprsunset':
     saved = json.loads(state.read_text())
     assert saved == {'active': True, 'temperature': 4000}, saved
     records = [json.loads(line) for line in log.read_text().splitlines()]
+    if startup_disabled:
+        writes = [record['argv'][2] for record in records
+                  if record['name'] == 'hyprctl' and len(record['argv']) > 2]
+        assert writes and writes[0] == '6500', writes
     for record in records:
         assert record['env']['PATH'] == '/usr/bin:/bin', record
         allowed = set(session) | {'PATH', 'PWD', 'SHLVL', '_', 'LC_CTYPE'}
@@ -154,9 +160,9 @@ elif name == 'hyprsunset':
 
 
 with tempfile.TemporaryDirectory(prefix='screen-temperature process-') as temporary:
-    for missing in (False, True):
-        directory = Path(temporary) / str(missing)
+    for missing, startup_disabled in ((False, False), (True, False), (False, True)):
+        directory = Path(temporary) / f'{missing}-{startup_disabled}'
         directory.mkdir()
-        exercise(directory, missing)
+        exercise(directory, missing, startup_disabled)
 
 print('test_process_security.py: PASS')

@@ -80,9 +80,9 @@ Panel {
     if (warmTemperature >= neutralTemperature) warmTemperature = 4000
     active = state.active === true
     loaded = true
-    // No apply here: hyprsunset has already put its own profile on the screen by
-    // the time the shell starts, and the first probe adopts whatever that is. A
-    // daemon that is not running at all is caught by the guard instead.
+    // The daemon can start at 6000K before its first profile fires. Apply the
+    // saved state now so a disabled plugin starts at neutral (6500K).
+    applyTemperature(temperature)
   }
 
   function setActive(value) {

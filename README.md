@@ -98,6 +98,8 @@ Restart the daemon after editing the file; it reads the config at startup.
 State lives in `~/.config/omarchy/screen-temperature.json`, written directly
 by the panel. The plugin writes only this file and never touches other user
 configuration.
+At startup, the panel applies the saved state. With no saved active state, it
+starts disabled at 6500 K, even if Hyprsunset starts at 6000 K.
 
 The path is predictable, so the panel treats the file as untrusted input. A
 helper opens it without following links, verifies that it is a regular file,
